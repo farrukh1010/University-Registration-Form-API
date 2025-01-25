@@ -1,113 +1,45 @@
 
 
-from fastapi import FastAPI, HTTPException, Query, Path
+
+
+from fastapi import FastAPI, HTTPException, Query, Path, Request
 from pydantic import BaseModel, EmailStr, validator
-from typing import Optional,List
-# from typing import List
+from typing import Optional, List, Dict
+import time
+import random
 
 app = FastAPI()
 
-# Mock database
-students_db = {
-    1234: {"name": "Farrukh Zaman", " subject": "Computer Science", "grades": {"Fall2024": "A", "Spring2025": "B"}},
-    2345: {"name": "Shahzeb", " subject": "Mathematics", "grades": {"Fall2024": "B", "Spring2025": "A"}},
-    3456: {"name": "Ahmad Zeb", " subject": "Physics", "grades": {"Fall2024": "A", "Spring2025": "A"}},
+# In-memory database
+students_db: Dict[int, dict] = {
+    1234: {"name": "Farrukh Zaman", "subject": "Computer Science", "grades": {"Fall2024": "A", "Spring2025": "B"}},
+    2345: {"name": "Shahzeb", "subject": "Mathematics", "grades": {"Fall2024": "B", "Spring2025": "A"}},
+    3456: {"name": "Ahmad Zeb", "subject": "Physics", "grades": {"Fall2024": "A", "Spring2025": "A"}},
 }
 
-# class StudentInfo(BaseModel):
-#     name: str
-#     subject: str
-#     grades: Optional[dict] = None
-class RegisterStudent(BaseModel):
-    name: str
-    email: EmailStr
-    age: int
-    courses: List[str]
-    subject: Optional[str] = None
-    grades: Optional[dict] = None
+# Middleware to log requests
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = time.time()
+    method = request.method
+    url = request.url
+    client = request.client.host
+
+    response = await call_next(request)
+
+    process_time = time.time() - start_time
+    print(f"[{client}] {method} {url} - {response.status_code} - {process_time:.2f}s")
+
+    return response
 
 
-@app.get("/students/{student_id}")
-async def get_student_info(
-    student_id: int = Path(...),
-    include_grades: bool = Query(False),
-    semester: Optional[str] = Query(None, regex=r"^(Fall|Spring|Summer)\d{4}$")
-):
-    try:
-             # Validate student_id
-        if student_id < 1000 or student_id > 9999:
-            raise HTTPException(
-                status_code=422,
-                detail="student_id must be between 1000 and 9999",
-                
-            )
-
-        # Retrieve student data
-        student = students_db.get(student_id)
-        if not student:
-            # raise ValueError("Student not found")
-                raise HTTPException(
-                status_code=422,  # Still a validation issue since ID doesn't exist
-                detail=f"Student with id {student_id} does not exist"
-            )
-
-        # Prepare response
-        response = {
-            "status": "success",
-            "data": {
-                "id": student_id,
-                "person": student
-            }
-        }
-
-        # Include grades if requested
-        if include_grades:
-            if semester:
-                grades = {semester: student["grades"].get(semester, "No grade available")}
-            else:
-                grades = student["grades"]
-            response["data"]["person"]["grades"] = grades
-        else:
-            response["data"]["person"].pop("grades", None)
-
-        return response
-
-    except HTTPException as http_exc:
-        # Re-raise HTTP exceptions for FastAPI to handle them
-        raise http_exc
-    except ValueError as e:
-        return {
-            "status": "error",
-            "message": str(e),
-            "data": None
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": "An unexpected error occurred.",
-            "data": None
-        }
-    
-
-    
- # Mock database for registered students
-registered_students = [
-    {
-  "name": "Alice Smith",
-  "email": "alice@example.com",
-  "age": 20,
-  "courses": "Mathematics"
-}
-]
-
-# Request model for registering a student
+# Models
 class RegisterStudent(BaseModel):
     name: str
     email: EmailStr
     age: int
     courses: List[str]
 
-    # Validators
     @validator("name")
     def validate_name(cls, name):
         if not name.replace(" ", "").isalpha():
@@ -137,28 +69,103 @@ class RegisterStudent(BaseModel):
                 raise ValueError("Each course name must be between 5 and 30 characters")
         return courses
 
-@app.post("/students/register")
-async def register_student(student: RegisterStudent):
-    # Check for duplicate email
-    if any(s["email"] == student.email for s in registered_students):
-        raise HTTPException(
-            status_code=400,
-            detail=f"A student with email {student.email} is already registered"
-        )
 
-    # Save the student in the mock database
-    registered_students.append(student.dict())
+class UpdateEmailRequest(BaseModel):
+    email: EmailStr
 
+    class Config:
+        schema_extra = {
+            "example": {
+                "email": "new.email@example.com"
+            }
+        }
+
+
+# Routes
+@app.get("/")
+def read_root():
+    return {"University Registration Form API": "Welcome to the University Registration Form API"}
+@app.get("/students/{student_id}", summary="Get Student Info", description="Retrieve student information by ID.")
+async def get_student_info(
+    student_id: int = Path(..., ge=1000, le=9999),
+    include_grades: bool = Query(False),
+    semester: Optional[str] = Query(None, regex=r"^(Fall|Spring|Summer)\d{4}$")
+):
+    student = students_db.get(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student with ID {student_id} not found")
+
+    response = {
+        "status": "success",
+        "data": {"id": student_id, "person": student}
+    }
+
+    if include_grades:
+        if semester:
+            grades = {semester: student["grades"].get(semester, "No grade available")}
+        else:
+            grades = student["grades"]
+        response["data"]["person"]["grades"] = grades
+    else:
+        response["data"]["person"].pop("grades", None)
+
+    return response
+
+
+@app.post("/students", summary="Add Student", description="Adds a new student to the in-memory database.")
+async def add_student(student: RegisterStudent):
+    while True:
+        student_id = random.randint(1000, 9999)
+        if student_id not in students_db:
+            break
+
+    students_db[student_id] = student.dict()
     return {
         "status": "success",
-        "message": "Student registered successfully",
-        "data": student.dict()
+        "message": f"Student added with ID {student_id}",
+        "data": {
+            "id": student_id,
+            **student.dict()
+        }
     }
 
 
+@app.post("/students/register", summary="Register Student", description="Registers a new student.")
+async def register_student(student: RegisterStudent):
+    if any(s.get("email") == student.email for s in students_db.values()):
+        raise HTTPException(status_code=400, detail=f"A student with email {student.email} is already registered")
+
+    student_id = random.randint(1000, 9999)
+    students_db[student_id] = student.dict()
+    return {
+        "status": "success",
+        "message": f"Student registered with ID {student_id}",
+        "data": {
+            "id": student_id,
+            **student.dict()
+        }
+    }
 
 
- 
+@app.put("/students/{student_id}/email", summary="Update Student Email", description="Updates a student's email by ID.")
+async def update_student_email(
+    student_id: int = Path(..., ge=1000, le=9999),
+    email_request: UpdateEmailRequest = None
+):
+    student = students_db.get(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail=f"Student with ID {student_id} not found")
+
+    student["email"] = email_request.email
+    return {
+        "status": "success",
+        "message": f"Email updated for student ID {student_id}",
+        "data": {
+            "id": student_id,
+            "updated_email": email_request.email
+        }
+    }
+
 
 
 
